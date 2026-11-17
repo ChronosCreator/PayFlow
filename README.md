@@ -22,23 +22,23 @@ PayFlow provides merchants with a centralized dashboard to manage their payment 
 
 ### Dashboard
 
-![PayFlow Dashboard](screenshots/dashboard.png)
+![PayFlow Dashboard](screenshots/Dashboard.png)
 
 ### Orders
 
-![PayFlow Orders](screenshots/orders.png)
+![PayFlow Orders](screenshots/Orders.png)
 
 ### Payments
 
-![PayFlow Payments](screenshots/payments.png)
+![PayFlow Payments](screenshots/Payments.png)
 
 ### Products
 
-![PayFlow Products](screenshots/products.png)
+![PayFlow Products](screenshots/Products.png)
 
 ### Customers
 
-![PayFlow Customers](screenshots/customers.png)
+![PayFlow Customers](screenshots/Customers.png)
 
 ## Tech Stack
 
