@@ -127,19 +127,17 @@ export const verifyPayment = async (
       throw new Error("PAYMENT_NOT_FOUND");
     }
 
-    if (updatedPayment.status !== "SUCCESS") {
-      await tx.order.update({
-        where: { id: payment.orderId },
-        data: {
-          status:
-            nextStatus === "SUCCESS"
-              ? "PAID"
-              : nextStatus === "FAILED"
-                ? "FAILED"
-                : "PENDING",
-        },
-      });
-    }
+    await tx.order.update({
+  where: { id: payment.orderId },
+  data: {
+    status:
+      updatedPayment.status === "SUCCESS"
+        ? "PAID"
+        : updatedPayment.status === "FAILED"
+          ? "FAILED"
+          : "PENDING",
+  },
+});
 
     return updatedPayment;
   });
