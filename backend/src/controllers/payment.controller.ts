@@ -57,7 +57,7 @@ export const getPayments = async (
   }
 };
 
-// Verify Razorpay payment signature
+// Verify Razorpay checkout signature
 export const verify = async (
   req: AuthRequest,
   res: Response
@@ -132,18 +132,35 @@ export const verify = async (
   }
 };
 
+
 // Handle Razorpay webhook events
 export const razorpayWebhook = async (
   req: Request,
   res: Response
 ) => {
   try {
+    console.log("[WEBHOOK] Request received", {
+      eventId: req.headers["x-razorpay-event-id"],
+      signaturePresent: Boolean(
+        req.headers["x-razorpay-signature"]
+      ),
+      bodyIsBuffer: Buffer.isBuffer(req.body),
+    });
+
     const signature = req.headers["x-razorpay-signature"];
+    const eventId = req.headers["x-razorpay-event-id"];
 
     if (!signature || typeof signature !== "string") {
       return res.status(400).json({
         success: false,
         message: "Missing webhook signature",
+      });
+    }
+
+    if (!eventId || typeof eventId !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Missing webhook event ID",
       });
     }
 
@@ -155,30 +172,37 @@ export const razorpayWebhook = async (
     }
 
     const rawBody = req.body.toString("utf8");
-    const event = JSON.parse(rawBody);
 
-    const eventId = req.headers["x-razorpay-event-id"];
+    // Parse and type the Razorpay webhook event
+    let event: Parameters<typeof handleRazorpayWebhook>[2];
 
-if (!eventId || typeof eventId !== "string") {
-  return res.status(400).json({
-    success: false,
-    message: "Missing webhook event ID",
-  });
-}
+    try {
+      event = JSON.parse(rawBody) as Parameters<
+        typeof handleRazorpayWebhook
+      >[2];
+    } catch {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid webhook JSON",
+      });
+    }
 
-await handleRazorpayWebhook(
-  rawBody,
-  signature,
-  event,
-  eventId
-);
+    const result = await handleRazorpayWebhook(
+      rawBody,
+      signature,
+      event,
+      eventId
+    );
+
+    console.log("[WEBHOOK] Processing result:", result);
 
     return res.status(200).json({
       success: true,
-      message: "Webhook processed successfully",
+      message: "Webhook received",
+      data: result,
     });
   } catch (error) {
-    console.error("Razorpay webhook error:", error);
+    console.error("[WEBHOOK] Processing error:", error);
 
     return res.status(400).json({
       success: false,
