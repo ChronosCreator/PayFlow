@@ -73,7 +73,15 @@ interface Product {
   id: string;
 }
 
-const API = "http://localhost:5000/api";
+
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+const API = API_BASE_URL
+  ? API_BASE_URL.endsWith("/api")
+    ? API_BASE_URL
+    : `${API_BASE_URL}/api`
+  : "/api";
+
 
 function Dashboard({
   name,

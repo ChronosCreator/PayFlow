@@ -13,7 +13,12 @@ interface CustomersProps {
   token: string;
 }
 
-const API = "http://localhost:5000/api/customers";
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+const API = API_BASE_URL.endsWith("/api")
+  ? `${API_BASE_URL}/customers`
+  : `${API_BASE_URL}/api/customers`;
+  
 
 function Customers({ token }: CustomersProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);

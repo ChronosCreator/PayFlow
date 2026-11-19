@@ -1,3 +1,4 @@
+
 import type { Request, Response } from "express";
 
 import {
@@ -10,12 +11,19 @@ export const register = async (
   res: Response
 ) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password } = req.body ?? {};
 
-    if (!name || !email || !password) {
+    if (
+      typeof name !== "string" ||
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      !name.trim() ||
+      !email.trim() ||
+      !password
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Name, email and password are required",
+        message: "Valid name, email and password are required",
       });
     }
 
@@ -48,6 +56,16 @@ export const register = async (
       });
     }
 
+    if (
+      error instanceof Error &&
+      error.message === "INVALID_REGISTRATION_INPUT"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid registration details",
+      });
+    }
+
     console.error("Registration error:", error);
 
     return res.status(500).json({
@@ -62,19 +80,21 @@ export const login = async (
   res: Response
 ) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body ?? {};
 
-    if (!email || !password) {
+    if (
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      !email.trim() ||
+      !password
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required",
+        message: "Valid email and password are required",
       });
     }
 
-    const merchant = await loginMerchant(
-      email,
-      password
-    );
+    const merchant = await loginMerchant(email, password);
 
     return res.status(200).json({
       success: true,

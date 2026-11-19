@@ -23,8 +23,12 @@ interface PaymentsProps {
   token: string;
 }
 
-const API = "http://localhost:5000/api/payments";
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 
+const API = API_BASE_URL.endsWith("/api")
+  ? `${API_BASE_URL}/payments`
+  : `${API_BASE_URL}/api/payments`;
+  
 function Payments({ token }: PaymentsProps) {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);

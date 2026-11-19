@@ -10,6 +10,7 @@ interface Merchant {
   token: string;
 }
 
+// Get saved merchant details from localStorage
 const getSavedMerchant = (): Merchant | null => {
   try {
     const savedMerchant = localStorage.getItem("payflow_merchant");
@@ -28,6 +29,13 @@ const getSavedMerchant = (): Merchant | null => {
   }
 };
 
+// Configure the deployed backend URL
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+
+const API_URL = API_BASE_URL.endsWith("/api")
+  ? API_BASE_URL
+  : `${API_BASE_URL}/api`;
+
 function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -38,6 +46,7 @@ function App() {
     getSavedMerchant
   );
 
+  // Merchant login
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -45,16 +54,17 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        "http://localhost:5000/api/auth/login",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ email, password }),
-        }
-      );
+      if (!API_BASE_URL) {
+        throw new Error("Backend URL is not configured. Check frontend/.env");
+      }
+
+      const response = await fetch(`${API_URL}/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+      });
 
       const result = await response.json();
 
@@ -65,6 +75,7 @@ function App() {
       const merchantData: Merchant = result.data;
 
       localStorage.setItem("payflow_token", merchantData.token);
+
       localStorage.setItem(
         "payflow_merchant",
         JSON.stringify(merchantData)
@@ -82,6 +93,7 @@ function App() {
     }
   };
 
+  // Merchant logout
   const handleLogout = () => {
     localStorage.removeItem("payflow_token");
     localStorage.removeItem("payflow_merchant");
@@ -90,18 +102,20 @@ function App() {
     setPassword("");
   };
 
+  // Show dashboard after successful login
   if (merchant) {
     return (
-     <Dashboard
-  name={merchant.name}
-  email={merchant.email}
-  token={merchant.token}
-  merchantId={merchant.merchantId}
-  onLogout={handleLogout}
-/>
+      <Dashboard
+        name={merchant.name}
+        email={merchant.email}
+        token={merchant.token}
+        merchantId={merchant.merchantId}
+        onLogout={handleLogout}
+      />
     );
   }
 
+  // Login page
   return (
     <div className="min-h-screen bg-[#080d19] flex items-center justify-center px-4 text-white">
       <div className="w-full max-w-md">

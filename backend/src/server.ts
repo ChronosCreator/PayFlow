@@ -20,17 +20,24 @@ const app = express();
 
 app.use(cors());
 
-// Razorpay webhook must receive the original raw body.
-// Keep this route BEFORE express.json().
+// Razorpay webhook route (keep before express.json)
 app.post(
   "/api/payments/webhook",
   express.raw({ type: "application/json" }),
   razorpayWebhook
 );
 
-// Parse JSON for all other API routes.
 app.use(express.json());
 
+// Health check FIRST
+app.get("/api/health", (_req, res) => {
+  res.json({
+    success: true,
+    message: "PayFlow API is running 🚀",
+  });
+});
+
+// API routes
 app.use("/api", testRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
@@ -38,13 +45,6 @@ app.use("/api/customers", customerRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/analytics", analyticsRoutes);
-
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    message: "PayFlow API is running 🚀",
-  });
-});
 
 const PORT = process.env.PORT || 5000;
 
