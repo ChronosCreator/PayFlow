@@ -69,8 +69,13 @@ export const verifyPayment = async (
   }
 
   if (payment.status === "SUCCESS") {
-    return payment;
-  }
+  await prisma.order.update({
+    where: { id: payment.orderId },
+    data: { status: "PAID" },
+  });
+
+  return payment;
+}
 
   // Fetch the actual payment status from Razorpay.
   const razorpayPayment =
@@ -253,23 +258,26 @@ export const handleRazorpayWebhook = async (
           : "FAILED";
 
       if (payment.status !== "SUCCESS") {
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            providerPaymentId: entity.id,
-            status: nextStatus,
-          },
-        });
+  await tx.payment.update({
+    where: { id: payment.id },
+    data: {
+      providerPaymentId: entity.id,
+      status: nextStatus,
+    },
+  });
+}
 
-        await tx.order.update({
-          where: { id: payment.orderId },
-          data: {
-            status:
-              nextStatus === "SUCCESS" ? "PAID" : "FAILED",
-          },
-        });
-      }
-
+if (payment.status === "SUCCESS" || nextStatus === "SUCCESS") {
+  await tx.order.update({
+    where: { id: payment.orderId },
+    data: { status: "PAID" },
+  });
+} else {
+  await tx.order.update({
+    where: { id: payment.orderId },
+    data: { status: "FAILED" },
+  });
+}
       await tx.webhookEvent.update({
         where: { eventId },
         data: { processedAt: new Date() },
