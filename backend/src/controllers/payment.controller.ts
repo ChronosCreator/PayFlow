@@ -57,7 +57,7 @@ export const getPayments = async (
   }
 };
 
-// Verify Razorpay checkout signature
+// Verify Razorpay checkout signature and payment status
 export const verify = async (
   req: AuthRequest,
   res: Response
@@ -74,16 +74,19 @@ export const verify = async (
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-    } = req.body;
+    } = req.body ?? {};
 
     if (
+      typeof razorpay_order_id !== "string" ||
+      typeof razorpay_payment_id !== "string" ||
+      typeof razorpay_signature !== "string" ||
       !razorpay_order_id ||
       !razorpay_payment_id ||
       !razorpay_signature
     ) {
       return res.status(400).json({
         success: false,
-        message: "Payment verification details are required",
+        message: "Valid payment verification details are required",
       });
     }
 
@@ -96,60 +99,71 @@ export const verify = async (
 
     return res.status(200).json({
       success: true,
-      message: "Payment signature verified successfully",
+      message:
+        payment.status === "SUCCESS"
+          ? "Payment captured and verified successfully"
+          : payment.status === "FAILED"
+            ? "Payment failed"
+            : "Payment signature verified; awaiting capture confirmation",
       data: payment,
     });
   } catch (error) {
     if (error instanceof Error) {
-      if (error.message === "PAYMENT_NOT_FOUND") {
-        return res.status(404).json({
-          success: false,
-          message: "Payment not found",
-        });
-      }
+      switch (error.message) {
+        case "PAYMENT_NOT_FOUND":
+          return res.status(404).json({
+            success: false,
+            message: "Payment not found",
+          });
 
-      if (error.message === "INVALID_PAYMENT_SIGNATURE") {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid payment signature",
-        });
-      }
+        case "INVALID_PAYMENT_SIGNATURE":
+          return res.status(400).json({
+            success: false,
+            message: "Invalid payment signature",
+          });
 
-      if (error.message === "PAYMENT_ALREADY_VERIFIED") {
-        return res.status(409).json({
-          success: false,
-          message: "Payment already verified with another payment ID",
-        });
+        case "PAYMENT_ALREADY_VERIFIED":
+          return res.status(409).json({
+            success: false,
+            message: "Payment already verified with another payment ID",
+          });
+
+        case "RAZORPAY_PAYMENT_MISMATCH":
+        case "PAYMENT_AMOUNT_OR_CURRENCY_MISMATCH":
+          return res.status(400).json({
+            success: false,
+            message: "Payment details do not match Razorpay records",
+          });
+
+        default:
+          break;
       }
     }
 
     console.error("Payment verification error:", error);
 
-    return res.status(500).json({
+    return res.status(502).json({
       success: false,
-      message: "Payment verification failed",
+      message: "Unable to confirm payment status with Razorpay",
     });
   }
 };
-
 
 // Handle Razorpay webhook events
 export const razorpayWebhook = async (
   req: Request,
   res: Response
 ) => {
+  const eventId = req.headers["x-razorpay-event-id"];
+  const signature = req.headers["x-razorpay-signature"];
+
+  console.log("[WEBHOOK] Request received", {
+    eventId,
+    signaturePresent: Boolean(signature),
+    bodyIsBuffer: Buffer.isBuffer(req.body),
+  });
+
   try {
-    console.log("[WEBHOOK] Request received", {
-      eventId: req.headers["x-razorpay-event-id"],
-      signaturePresent: Boolean(
-        req.headers["x-razorpay-signature"]
-      ),
-      bodyIsBuffer: Buffer.isBuffer(req.body),
-    });
-
-    const signature = req.headers["x-razorpay-signature"];
-    const eventId = req.headers["x-razorpay-event-id"];
-
     if (!signature || typeof signature !== "string") {
       return res.status(400).json({
         success: false,
@@ -173,7 +187,6 @@ export const razorpayWebhook = async (
 
     const rawBody = req.body.toString("utf8");
 
-    // Parse and type the Razorpay webhook event
     let event: Parameters<typeof handleRazorpayWebhook>[2];
 
     try {
@@ -210,3 +223,4 @@ export const razorpayWebhook = async (
     });
   }
 };
+

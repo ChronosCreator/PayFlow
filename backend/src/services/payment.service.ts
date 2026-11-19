@@ -2,11 +2,20 @@
 import crypto from "node:crypto";
 import prisma from "../config/prisma";
 import { verifyRazorpaySignature } from "../utils/razorpaySignature";
+import { RazorpayProvider } from "./razorpay.provider";
 
 export interface PaymentProviderOrder {
   providerOrderId: string;
   amount: number;
   currency: string;
+}
+
+export interface PaymentProviderPayment {
+  providerPaymentId: string;
+  providerOrderId: string | null;
+  amount: number;
+  currency: string;
+  status: string;
 }
 
 export interface PaymentProvider {
@@ -15,9 +24,15 @@ export interface PaymentProvider {
     currency: string,
     receipt: string
   ): Promise<PaymentProviderOrder>;
+
+  fetchPayment(
+    paymentId: string
+  ): Promise<PaymentProviderPayment>;
 }
 
-// Verify Razorpay checkout signature
+const razorpayProvider = new RazorpayProvider();
+
+// Verify checkout signature and confirm actual Razorpay payment status.
 export const verifyPayment = async (
   merchantId: string,
   providerOrderId: string,
@@ -53,9 +68,36 @@ export const verifyPayment = async (
     throw new Error("PAYMENT_ALREADY_VERIFIED");
   }
 
-  // Never downgrade a successfully captured payment.
   if (payment.status === "SUCCESS") {
     return payment;
+  }
+
+  // Fetch the actual payment status from Razorpay.
+  const razorpayPayment =
+    await razorpayProvider.fetchPayment(providerPaymentId);
+
+  if (
+    razorpayPayment.providerPaymentId !== providerPaymentId ||
+    razorpayPayment.providerOrderId !== providerOrderId
+  ) {
+    throw new Error("RAZORPAY_PAYMENT_MISMATCH");
+  }
+
+  const expectedAmount = Math.round(Number(payment.amount) * 100);
+
+  if (
+    razorpayPayment.amount !== expectedAmount ||
+    razorpayPayment.currency !== payment.currency
+  ) {
+    throw new Error("PAYMENT_AMOUNT_OR_CURRENCY_MISMATCH");
+  }
+
+  let nextStatus: "SUCCESS" | "FAILED" | "PENDING" = "PENDING";
+
+  if (razorpayPayment.status === "captured") {
+    nextStatus = "SUCCESS";
+  } else if (razorpayPayment.status === "failed") {
+    nextStatus = "FAILED";
   }
 
   return prisma.$transaction(async (tx) => {
@@ -68,7 +110,7 @@ export const verifyPayment = async (
       },
       data: {
         providerPaymentId,
-        status: "PENDING",
+        status: nextStatus,
       },
     });
 
@@ -84,7 +126,12 @@ export const verifyPayment = async (
       await tx.order.update({
         where: { id: payment.orderId },
         data: {
-          status: "PENDING",
+          status:
+            nextStatus === "SUCCESS"
+              ? "PAID"
+              : nextStatus === "FAILED"
+                ? "FAILED"
+                : "PENDING",
         },
       });
     }
@@ -93,7 +140,7 @@ export const verifyPayment = async (
   });
 };
 
-// Razorpay webhook event structure
+// Razorpay webhook event structure.
 interface RazorpayWebhookEvent {
   event: string;
   payload?: {
@@ -109,8 +156,7 @@ interface RazorpayWebhookEvent {
   };
 }
 
-// Process Razorpay webhook events
-
+// Process Razorpay webhook events.
 export const handleRazorpayWebhook = async (
   rawBody: string,
   signature: string,
@@ -123,7 +169,6 @@ export const handleRazorpayWebhook = async (
     throw new Error("RAZORPAY_WEBHOOK_SECRET is not configured");
   }
 
-  // Verify Razorpay webhook signature.
   const expectedSignature = crypto
     .createHmac("sha256", secret)
     .update(rawBody)
@@ -164,7 +209,6 @@ export const handleRazorpayWebhook = async (
 
   try {
     return await prisma.$transaction(async (tx) => {
-      // Find the corresponding PayFlow payment.
       const payment = await tx.payment.findFirst({
         where: {
           provider: "RAZORPAY",
@@ -176,7 +220,6 @@ export const handleRazorpayWebhook = async (
         throw new Error("PAYMENT_NOT_FOUND");
       }
 
-      // Validate amount and currency.
       const expectedAmount = Math.round(
         Number(payment.amount) * 100
       );
@@ -195,7 +238,6 @@ export const handleRazorpayWebhook = async (
         throw new Error("PAYMENT_ID_MISMATCH");
       }
 
-      // Register each webhook event independently.
       await tx.webhookEvent.create({
         data: {
           eventId,
@@ -210,7 +252,6 @@ export const handleRazorpayWebhook = async (
           ? "SUCCESS"
           : "FAILED";
 
-      // Never downgrade a successful payment.
       if (payment.status !== "SUCCESS") {
         await tx.payment.update({
           where: { id: payment.id },
@@ -243,7 +284,6 @@ export const handleRazorpayWebhook = async (
       };
     });
   } catch (error) {
-    // A previously registered event is a duplicate.
     if (
       typeof error === "object" &&
       error !== null &&

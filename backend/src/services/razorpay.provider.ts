@@ -1,9 +1,11 @@
+
 import Razorpay from "razorpay";
 import "dotenv/config";
 
 import type {
   PaymentProvider,
   PaymentProviderOrder,
+  PaymentProviderPayment,
 } from "./payment.service";
 
 const keyId = process.env.RAZORPAY_KEY_ID;
@@ -34,6 +36,20 @@ export class RazorpayProvider implements PaymentProvider {
       providerOrderId: order.id,
       amount: Number(order.amount),
       currency: order.currency,
+    };
+  }
+
+  async fetchPayment(
+    paymentId: string
+  ): Promise<PaymentProviderPayment> {
+    const payment = await razorpay.payments.fetch(paymentId);
+
+    return {
+      providerPaymentId: payment.id,
+      providerOrderId: payment.order_id ?? null,
+      amount: Number(payment.amount),
+      currency: payment.currency,
+      status: payment.status,
     };
   }
 }
