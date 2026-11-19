@@ -28,7 +28,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 const API = API_BASE_URL.endsWith("/api")
   ? `${API_BASE_URL}/payments`
   : `${API_BASE_URL}/api/payments`;
-  
+
 function Payments({ token }: PaymentsProps) {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,6 +38,7 @@ function Payments({ token }: PaymentsProps) {
 
   const loadPayments = useCallback(async () => {
     try {
+      setLoading(true);
       setError("");
 
       const response = await fetch(API, {
@@ -52,7 +53,7 @@ function Payments({ token }: PaymentsProps) {
         throw new Error(result.message || "Unable to load payments");
       }
 
-      setPayments(result.data);
+      setPayments(Array.isArray(result.data) ? result.data : []);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Something went wrong"
@@ -63,7 +64,7 @@ function Payments({ token }: PaymentsProps) {
   }, [token]);
 
   useEffect(() => {
-    loadPayments();
+    void loadPayments();
   }, [loadPayments]);
 
   const formatCurrency = (
@@ -89,10 +90,12 @@ function Payments({ token }: PaymentsProps) {
         return "bg-red-500/10 text-red-400";
       case "PENDING":
         return "bg-yellow-500/10 text-yellow-400";
+      case "CREATED":
+        return "bg-blue-500/10 text-blue-400";
       case "REFUNDED":
         return "bg-purple-500/10 text-purple-400";
       default:
-        return "bg-blue-500/10 text-blue-400";
+        return "bg-slate-500/10 text-slate-400";
     }
   };
 
@@ -125,8 +128,6 @@ function Payments({ token }: PaymentsProps) {
 
   return (
     <div className="space-y-8">
-
-      {/* Heading */}
       <div>
         <p className="text-slate-400">
           Monitor and track your payment transactions
@@ -136,16 +137,13 @@ function Payments({ token }: PaymentsProps) {
         </h2>
       </div>
 
-      {/* Error */}
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg p-4">
           {error}
         </div>
       )}
 
-      {/* Summary Cards */}
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-
         <div className="bg-[#111827] border border-slate-800 rounded-xl p-6">
           <p className="text-sm text-slate-400">Total Payments</p>
           <h3 className="text-2xl font-bold mt-3">
@@ -170,14 +168,10 @@ function Payments({ token }: PaymentsProps) {
             {formatCurrency(totalRevenue, "INR")}
           </h3>
         </div>
-
       </section>
 
-      {/* Payment Transactions */}
       <section className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden">
-
         <div className="p-6 border-b border-slate-800 space-y-5">
-
           <div>
             <h3 className="text-lg font-semibold">
               All Transactions
@@ -187,9 +181,7 @@ function Payments({ token }: PaymentsProps) {
             </p>
           </div>
 
-          {/* Search and Filter */}
           <div className="flex flex-col sm:flex-row gap-3">
-
             <input
               type="text"
               value={search}
@@ -212,13 +204,12 @@ function Payments({ token }: PaymentsProps) {
             </select>
 
             <button
-              onClick={loadPayments}
+              onClick={() => void loadPayments()}
               disabled={loading}
               className="bg-blue-600 hover:bg-blue-500 text-white rounded-lg px-5 py-3 text-sm disabled:opacity-50"
             >
-              Refresh
+              {loading ? "Refreshing..." : "Refresh"}
             </button>
-
           </div>
         </div>
 
@@ -229,7 +220,6 @@ function Payments({ token }: PaymentsProps) {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
-
               <thead className="bg-[#0d1423] text-slate-400">
                 <tr>
                   <th className="p-4">Payment ID</th>
@@ -251,7 +241,7 @@ function Payments({ token }: PaymentsProps) {
                       <p className="font-medium">
                         {payment.providerPaymentId
                           ? `${payment.providerPaymentId.slice(0, 12)}...`
-                          : payment.id.slice(0, 12) + "..."}
+                          : `${payment.id.slice(0, 12)}...`}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {payment.order?.orderNumber || "—"}
@@ -300,7 +290,6 @@ function Payments({ token }: PaymentsProps) {
                   </tr>
                 )}
               </tbody>
-
             </table>
           </div>
         )}

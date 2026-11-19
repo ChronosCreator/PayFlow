@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useState } from "react";
 
 interface Customer {
@@ -39,6 +38,17 @@ interface RazorpayResponse {
   razorpay_signature: string;
 }
 
+interface RazorpayFailureResponse {
+  error?: {
+    description?: string;
+    reason?: string;
+    metadata?: {
+      payment_id?: string;
+      order_id?: string;
+    };
+  };
+}
+
 interface RazorpayOptions {
   key: string;
   amount: number;
@@ -61,6 +71,10 @@ interface RazorpayOptions {
 
 interface RazorpayInstance {
   open: () => void;
+  on: (
+    event: "payment.failed",
+    handler: (response: RazorpayFailureResponse) => void
+  ) => void;
 }
 
 declare global {
@@ -70,6 +84,7 @@ declare global {
 
   interface ImportMetaEnv {
     readonly VITE_RAZORPAY_KEY_ID: string;
+    readonly VITE_API_URL?: string;
   }
 
   interface ImportMeta {
@@ -86,7 +101,6 @@ const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 const API = API_BASE_URL.endsWith("/api")
   ? API_BASE_URL
   : `${API_BASE_URL}/api`;
-  
 
 function Orders({ token }: OrdersProps) {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -99,6 +113,7 @@ function Orders({ token }: OrdersProps) {
   const [loading, setLoading] = useState(true);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [retryingOrderId, setRetryingOrderId] = useState<string | null>(null);
+
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
@@ -193,6 +208,71 @@ function Orders({ token }: OrdersProps) {
     }
   };
 
+  // Report a failed payment to the backend.
+  const reportPaymentFailure = async (
+    orderId: string,
+    paymentId?: string
+  ) => {
+    if (!paymentId) {
+      setMessage(
+        "Payment was not completed. The order remains available for retry."
+      );
+      await loadOrders();
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API}/payments/failure`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          razorpay_order_id: orderId,
+          razorpay_payment_id: paymentId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || "Unable to update payment status");
+      }
+
+      setMessage("Payment status updated.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to update failed payment"
+      );
+    } finally {
+      await loadOrders();
+    }
+  };
+
+  const loadRazorpay = async () => {
+    if (window.Razorpay) return;
+
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+
+      script.onload = () => resolve();
+      script.onerror = () =>
+        reject(new Error("Unable to load Razorpay Checkout."));
+
+      document.body.appendChild(script);
+    });
+
+    if (!window.Razorpay) {
+      throw new Error("Razorpay Checkout could not be initialized.");
+    }
+  };
+
   const createOrderAndPay = async () => {
     try {
       setError("");
@@ -222,26 +302,8 @@ function Orders({ token }: OrdersProps) {
 
       setCheckoutLoading(true);
 
-      // Load Razorpay Checkout script
-      if (!window.Razorpay) {
-        const script = document.createElement("script");
-        script.src = "https://checkout.razorpay.com/v1/checkout.js";
-        script.async = true;
+      await loadRazorpay();
 
-        await new Promise<void>((resolve, reject) => {
-          script.onload = () => resolve();
-          script.onerror = () => reject(
-            new Error("Unable to load Razorpay Checkout.")
-          );
-          document.body.appendChild(script);
-        });
-      }
-
-      if (!window.Razorpay) {
-        throw new Error("Razorpay Checkout could not be initialized.");
-      }
-
-      // Create order in our backend
       const orderResponse = await fetch(`${API}/orders`, {
         method: "POST",
         headers: {
@@ -269,8 +331,7 @@ function Orders({ token }: OrdersProps) {
         throw new Error("Razorpay order ID was not returned by the backend.");
       }
 
-      // Open Razorpay Checkout
-      const checkout = new window.Razorpay({
+      const checkout = new window.Razorpay!({
         key,
         amount: Math.round(Number(product.price) * 100),
         currency: product.currency || "INR",
@@ -306,20 +367,16 @@ function Orders({ token }: OrdersProps) {
               );
             }
 
-            setMessage(
-              "Payment verified successfully! Order status will update after confirmation."
-            );
-
-            await loadOrders();
+            setMessage("Payment verified successfully!");
           } catch (err) {
             setError(
               err instanceof Error
                 ? err.message
                 : "Payment verification failed."
             );
-            await loadOrders();
           } finally {
             setCheckoutLoading(false);
+            await loadOrders();
           }
         },
         modal: {
@@ -331,6 +388,18 @@ function Orders({ token }: OrdersProps) {
         },
       });
 
+      checkout.on("payment.failed", async (response) => {
+        setCheckoutLoading(false);
+        setError(
+          response.error?.description || "Payment failed. Please try again."
+        );
+
+        await reportPaymentFailure(
+          providerOrderId,
+          response.error?.metadata?.payment_id
+        );
+      });
+
       checkout.open();
     } catch (err) {
       setError(
@@ -339,128 +408,121 @@ function Orders({ token }: OrdersProps) {
       setCheckoutLoading(false);
     }
   };
+
   const retryPayment = async (order: Order) => {
-  try {
-    setError("");
-    setMessage("");
-    setRetryingOrderId(order.id);
+    try {
+      setError("");
+      setMessage("");
+      setRetryingOrderId(order.id);
 
-    const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
+      const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
 
-    if (!key) {
-      throw new Error("Razorpay Key ID is missing.");
-    }
+      if (!key) {
+        throw new Error("Razorpay Key ID is missing.");
+      }
 
-    // Load Razorpay Checkout if needed
-    if (!window.Razorpay) {
-      const script = document.createElement("script");
-      script.src = "https://checkout.razorpay.com/v1/checkout.js";
-      script.async = true;
+      await loadRazorpay();
 
-      await new Promise<void>((resolve, reject) => {
-        script.onload = () => resolve();
-        script.onerror = () =>
-          reject(new Error("Unable to load Razorpay Checkout."));
-        document.body.appendChild(script);
-      });
-    }
-
-    if (!window.Razorpay) {
-      throw new Error("Razorpay Checkout could not be initialized.");
-    }
-
-    // Request a new payment attempt
-    const response = await fetch(
-      `${API}/orders/${order.id}/retry`,
-      {
+      const response = await fetch(`${API}/orders/${order.id}/retry`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
         },
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || "Payment retry failed.");
       }
-    );
 
-    const result = await response.json();
+      const newPayment = result.data.payment;
+      const customer = order.customer;
 
-    if (!response.ok) {
-      throw new Error(result.message || "Payment retry failed.");
-    }
+      if (!newPayment?.providerOrderId) {
+        throw new Error("New Razorpay order ID was not returned.");
+      }
 
-    const newPayment = result.data.payment;
-    const customer = order.customer;
-
-    if (!newPayment?.providerOrderId) {
-      throw new Error("New Razorpay order ID was not returned.");
-    }
-
-    // Open Razorpay Checkout
-    const checkout = new window.Razorpay({
-      key,
-      amount: Math.round(Number(order.amount) * 100),
-      currency: order.currency,
-      name: "PayFlow",
-      description: `Retry payment for ${order.orderNumber}`,
-      order_id: newPayment.providerOrderId,
-      prefill: {
-        name: customer?.name,
-        email: customer?.email,
-      },
-      theme: {
-        color: "#3b82f6",
-      },
-      handler: async (paymentResponse) => {
-        try {
-          setMessage("Payment received. Verifying payment...");
-
-          const verifyResponse = await fetch(`${API}/payments/verify`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify(paymentResponse),
-          });
-
-          const verifyResult = await verifyResponse.json();
-
-          if (!verifyResponse.ok) {
-            throw new Error(
-              verifyResult.message || "Payment verification failed."
-            );
-          }
-
-          setMessage(
-            "Retry payment verified! Waiting for confirmation."
-          );
-        } catch (err) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Payment verification failed."
-          );
-        } finally {
-          setRetryingOrderId(null);
-          await loadOrders();
-        }
-      },
-      modal: {
-        ondismiss: () => {
-          setRetryingOrderId(null);
-          setMessage("Checkout closed. You can retry this order again.");
-          loadOrders();
+      const checkout = new window.Razorpay!({
+        key,
+        amount: Math.round(Number(order.amount) * 100),
+        currency: order.currency,
+        name: "PayFlow",
+        description: `Retry payment for ${order.orderNumber}`,
+        order_id: newPayment.providerOrderId,
+        prefill: {
+          name: customer?.name,
+          email: customer?.email,
         },
-      },
-    });
+        theme: {
+          color: "#3b82f6",
+        },
+        handler: async (paymentResponse) => {
+          try {
+            setError("");
+            setMessage("Payment received. Verifying payment...");
 
-    checkout.open();
-  } catch (err) {
-    setError(
-      err instanceof Error ? err.message : "Payment retry failed."
-    );
-    setRetryingOrderId(null);
-    await loadOrders();
-  }
-};
+            const verifyResponse = await fetch(`${API}/payments/verify`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify(paymentResponse),
+            });
+
+            const verifyResult = await verifyResponse.json();
+
+            if (!verifyResponse.ok) {
+              throw new Error(
+                verifyResult.message || "Payment verification failed."
+              );
+            }
+
+            setMessage("Retry payment verified successfully!");
+          } catch (err) {
+            setError(
+              err instanceof Error
+                ? err.message
+                : "Payment verification failed."
+            );
+          } finally {
+            setRetryingOrderId(null);
+            await loadOrders();
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setRetryingOrderId(null);
+            setMessage("Checkout closed. You can retry this order again.");
+            loadOrders();
+          },
+        },
+      });
+
+      checkout.on("payment.failed", async (failureResponse) => {
+        setRetryingOrderId(null);
+
+        setError(
+          failureResponse.error?.description ||
+            "Payment failed. Please try again."
+        );
+
+        await reportPaymentFailure(
+          newPayment.providerOrderId,
+          failureResponse.error?.metadata?.payment_id
+        );
+      });
+
+      checkout.open();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Payment retry failed."
+      );
+      setRetryingOrderId(null);
+      await loadOrders();
+    }
+  };
 
   const paidOrders = orders.filter((order) => order.status === "PAID");
 
@@ -468,24 +530,25 @@ function Orders({ token }: OrdersProps) {
     (total, order) => total + Number(order.amount),
     0
   );
-const filteredOrders = orders.filter((order) => {
-  const searchTerm = search.trim().toLowerCase();
 
-  const matchesSearch =
-    !searchTerm ||
-    order.orderNumber.toLowerCase().includes(searchTerm) ||
-    order.customer?.name?.toLowerCase().includes(searchTerm) ||
-    order.customer?.email?.toLowerCase().includes(searchTerm) ||
-    order.payments?.some(
-      (payment) =>
+  const filteredOrders = orders.filter((order) => {
+    const searchTerm = search.trim().toLowerCase();
+
+    const matchesSearch =
+      !searchTerm ||
+      order.orderNumber.toLowerCase().includes(searchTerm) ||
+      order.customer?.name?.toLowerCase().includes(searchTerm) ||
+      order.customer?.email?.toLowerCase().includes(searchTerm) ||
+      order.payments?.some((payment) =>
         payment.providerOrderId?.toLowerCase().includes(searchTerm)
-    );
+      );
 
-  const matchesStatus =
-    statusFilter === "ALL" || order.status === statusFilter;
+    const matchesStatus =
+      statusFilter === "ALL" || order.status === statusFilter;
 
-  return matchesSearch && matchesStatus;
-});
+    return matchesSearch && matchesStatus;
+  });
+
   const activeProducts = products.filter((product) => product.active);
 
   const currentProduct = products.find(
@@ -494,17 +557,11 @@ const filteredOrders = orders.filter((order) => {
 
   return (
     <div className="space-y-8">
-      {/* Heading */}
       <div>
-        <p className="text-slate-400">
-          Track and manage your payment orders
-        </p>
-        <h2 className="text-xl font-semibold mt-2">
-          Order Management
-        </h2>
+        <p className="text-slate-400">Track and manage your payment orders</p>
+        <h2 className="text-xl font-semibold mt-2">Order Management</h2>
       </div>
 
-      {/* Error and success messages */}
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg p-4">
           {error}
@@ -517,7 +574,6 @@ const filteredOrders = orders.filter((order) => {
         </div>
       )}
 
-      {/* Create Order */}
       <section className="bg-[#111827] border border-slate-800 rounded-xl p-6 space-y-5">
         <div>
           <h3 className="text-lg font-semibold">Create New Order</h3>
@@ -557,7 +613,8 @@ const filteredOrders = orders.filter((order) => {
               <option value="">Choose a product</option>
               {activeProducts.map((product) => (
                 <option key={product.id} value={product.id}>
-                  {product.name} — {formatCurrency(product.price, product.currency)}
+                  {product.name} —{" "}
+                  {formatCurrency(product.price, product.currency)}
                 </option>
               ))}
             </select>
@@ -600,7 +657,6 @@ const filteredOrders = orders.filter((order) => {
         )}
       </section>
 
-      {/* Summary Cards */}
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-5">
         <div className="bg-[#111827] border border-slate-800 rounded-xl p-6">
           <p className="text-sm text-slate-400">Total Orders</p>
@@ -622,53 +678,48 @@ const filteredOrders = orders.filter((order) => {
         </div>
       </section>
 
-      {/* Orders Table */}
       <section className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden">
-       
-<div className="p-6 border-b border-slate-800 space-y-5">
-  <div>
-    <h3 className="text-lg font-semibold">All Orders</h3>
-    <p className="text-sm text-slate-400 mt-1">
-      {filteredOrders.length} orders found
-    </p>
-  </div>
+        <div className="p-6 border-b border-slate-800 space-y-5">
+          <div>
+            <h3 className="text-lg font-semibold">All Orders</h3>
+            <p className="text-sm text-slate-400 mt-1">
+              {filteredOrders.length} orders found
+            </p>
+          </div>
 
-  <div className="flex flex-col sm:flex-row gap-3">
-    <input
-      type="text"
-      value={search}
-      onChange={(e) => setSearch(e.target.value)}
-      placeholder="Search order ID, customer name or email..."
-      className="flex-1 bg-[#0d1423] border border-slate-700 rounded-lg p-3 text-white outline-none focus:border-blue-500"
-    />
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search order ID, customer name or email..."
+              className="flex-1 bg-[#0d1423] border border-slate-700 rounded-lg p-3 text-white outline-none focus:border-blue-500"
+            />
 
-    <select
-      value={statusFilter}
-      onChange={(e) => setStatusFilter(e.target.value)}
-      className="bg-[#0d1423] border border-slate-700 rounded-lg p-3 text-white outline-none focus:border-blue-500"
-    >
-      <option value="ALL">All Statuses</option>
-      <option value="PAID">Paid</option>
-      <option value="PENDING">Pending</option>
-      <option value="CREATED">Created</option>
-      <option value="FAILED">Failed</option>
-    </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="bg-[#0d1423] border border-slate-700 rounded-lg p-3 text-white outline-none focus:border-blue-500"
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="PAID">Paid</option>
+              <option value="PENDING">Pending</option>
+              <option value="CREATED">Created</option>
+              <option value="FAILED">Failed</option>
+            </select>
 
-    <button
-      onClick={loadOrders}
-      disabled={loading}
-      className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-lg text-sm disabled:opacity-50"
-    >
-      Refresh
-    </button>
-  </div>
-</div>
-
+            <button
+              onClick={loadOrders}
+              disabled={loading}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-lg text-sm disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
 
         {loading ? (
-          <p className="p-8 text-center text-slate-400">
-            Loading orders...
-          </p>
+          <p className="p-8 text-center text-slate-400">Loading orders...</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
@@ -724,17 +775,20 @@ const filteredOrders = orders.filter((order) => {
                     <td className="p-4 text-slate-400 whitespace-nowrap">
                       {new Date(order.createdAt).toLocaleDateString("en-IN")}
                     </td>
+
                     <td className="p-4">
-  {order.status === "FAILED" && (
-    <button
-      onClick={() => retryPayment(order)}
-      disabled={retryingOrderId !== null}
-      className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap"
-    >
-      {retryingOrderId === order.id ? "Retrying..." : "Retry Payment"}
-    </button>
-  )}
-</td>
+                      {order.status === "FAILED" && (
+                        <button
+                          onClick={() => retryPayment(order)}
+                          disabled={retryingOrderId !== null}
+                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap"
+                        >
+                          {retryingOrderId === order.id
+                            ? "Retrying..."
+                            : "Retry Payment"}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
 

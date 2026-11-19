@@ -5,6 +5,7 @@ import prisma from "../config/prisma";
 import {
   verifyPayment,
   handleRazorpayWebhook,
+  recordFailedPayment,
 } from "../services/payment.service";
 
 // Get all payments belonging to the logged-in merchant
@@ -148,6 +149,80 @@ export const verify = async (
     });
   }
 };
+
+
+export const reportFailure = async (
+  req: AuthRequest,
+  res: Response
+) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+    } = req.body ?? {};
+
+    if (
+      typeof razorpay_order_id !== "string" ||
+      typeof razorpay_payment_id !== "string" ||
+      !razorpay_order_id ||
+      !razorpay_payment_id
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid Razorpay payment details are required",
+      });
+    }
+
+    const payment = await recordFailedPayment(
+      req.user.merchantId,
+      razorpay_order_id,
+      razorpay_payment_id
+    );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        payment.status === "FAILED"
+          ? "Failed payment recorded successfully"
+          : payment.status === "SUCCESS"
+            ? "Payment was actually captured successfully"
+            : "Payment status is still pending confirmation",
+      data: payment,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      switch (error.message) {
+        case "PAYMENT_NOT_FOUND":
+          return res.status(404).json({
+            success: false,
+            message: "Payment not found",
+          });
+
+        case "RAZORPAY_PAYMENT_MISMATCH":
+        case "PAYMENT_AMOUNT_OR_CURRENCY_MISMATCH":
+          return res.status(400).json({
+            success: false,
+            message: "Payment details do not match Razorpay records",
+          });
+      }
+    }
+
+    console.error("Payment failure reporting error:", error);
+
+    return res.status(502).json({
+      success: false,
+      message: "Unable to confirm payment status with Razorpay",
+    });
+  }
+};
+
 
 // Handle Razorpay webhook events
 export const razorpayWebhook = async (

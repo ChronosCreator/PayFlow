@@ -69,15 +69,14 @@ export const verifyPayment = async (
   }
 
   if (payment.status === "SUCCESS") {
-  await prisma.order.update({
-    where: { id: payment.orderId },
-    data: { status: "PAID" },
-  });
+    await prisma.order.update({
+      where: { id: payment.orderId },
+      data: { status: "PAID" },
+    });
 
-  return payment;
-}
+    return payment;
+  }
 
-  // Fetch the actual payment status from Razorpay.
   const razorpayPayment =
     await razorpayProvider.fetchPayment(providerPaymentId);
 
@@ -109,9 +108,7 @@ export const verifyPayment = async (
     await tx.payment.updateMany({
       where: {
         id: payment.id,
-        status: {
-          not: "SUCCESS",
-        },
+        status: { not: "SUCCESS" },
       },
       data: {
         providerPaymentId,
@@ -128,16 +125,16 @@ export const verifyPayment = async (
     }
 
     await tx.order.update({
-  where: { id: payment.orderId },
-  data: {
-    status:
-      updatedPayment.status === "SUCCESS"
-        ? "PAID"
-        : updatedPayment.status === "FAILED"
-          ? "FAILED"
-          : "PENDING",
-  },
-});
+      where: { id: payment.orderId },
+      data: {
+        status:
+          updatedPayment.status === "SUCCESS"
+            ? "PAID"
+            : updatedPayment.status === "FAILED"
+              ? "FAILED"
+              : "PENDING",
+      },
+    });
 
     return updatedPayment;
   });
@@ -256,26 +253,27 @@ export const handleRazorpayWebhook = async (
           : "FAILED";
 
       if (payment.status !== "SUCCESS") {
-  await tx.payment.update({
-    where: { id: payment.id },
-    data: {
-      providerPaymentId: entity.id,
-      status: nextStatus,
-    },
-  });
-}
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: {
+            providerPaymentId: entity.id,
+            status: nextStatus,
+          },
+        });
+      }
 
-if (payment.status === "SUCCESS" || nextStatus === "SUCCESS") {
-  await tx.order.update({
-    where: { id: payment.orderId },
-    data: { status: "PAID" },
-  });
-} else {
-  await tx.order.update({
-    where: { id: payment.orderId },
-    data: { status: "FAILED" },
-  });
-}
+      if (payment.status === "SUCCESS" || nextStatus === "SUCCESS") {
+        await tx.order.update({
+          where: { id: payment.orderId },
+          data: { status: "PAID" },
+        });
+      } else {
+        await tx.order.update({
+          where: { id: payment.orderId },
+          data: { status: "FAILED" },
+        });
+      }
+
       await tx.webhookEvent.update({
         where: { eventId },
         data: { processedAt: new Date() },
@@ -307,4 +305,99 @@ if (payment.status === "SUCCESS" || nextStatus === "SUCCESS") {
 
     throw error;
   }
+};
+
+// Record a failed payment after independently checking Razorpay.
+export const recordFailedPayment = async (
+  merchantId: string,
+  providerOrderId: string,
+  providerPaymentId: string
+) => {
+  const payment = await prisma.payment.findFirst({
+    where: {
+      merchantId,
+      providerOrderId,
+      provider: "RAZORPAY",
+    },
+  });
+
+  if (!payment) {
+    throw new Error("PAYMENT_NOT_FOUND");
+  }
+
+  const razorpayPayment =
+    await razorpayProvider.fetchPayment(providerPaymentId);
+
+  if (
+    razorpayPayment.providerPaymentId !== providerPaymentId ||
+    razorpayPayment.providerOrderId !== providerOrderId
+  ) {
+    throw new Error("RAZORPAY_PAYMENT_MISMATCH");
+  }
+
+  const expectedAmount = Math.round(Number(payment.amount) * 100);
+
+  if (
+    razorpayPayment.amount !== expectedAmount ||
+    razorpayPayment.currency !== payment.currency
+  ) {
+    throw new Error("PAYMENT_AMOUNT_OR_CURRENCY_MISMATCH");
+  }
+
+  let nextStatus: "SUCCESS" | "FAILED" | "PENDING" = "PENDING";
+
+  if (razorpayPayment.status === "captured") {
+    nextStatus = "SUCCESS";
+  } else if (razorpayPayment.status === "failed") {
+    nextStatus = "FAILED";
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const currentPayment = await tx.payment.findUnique({
+      where: { id: payment.id },
+    });
+
+    if (!currentPayment) {
+      throw new Error("PAYMENT_NOT_FOUND");
+    }
+
+    if (currentPayment.status === "SUCCESS") {
+      await tx.order.update({
+        where: { id: currentPayment.orderId },
+        data: { status: "PAID" },
+      });
+
+      return currentPayment;
+    }
+
+    await tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        providerPaymentId,
+        status: nextStatus,
+      },
+    });
+
+    const updatedPayment = await tx.payment.findUnique({
+      where: { id: payment.id },
+    });
+
+    if (!updatedPayment) {
+      throw new Error("PAYMENT_NOT_FOUND");
+    }
+
+    await tx.order.update({
+      where: { id: updatedPayment.orderId },
+      data: {
+        status:
+          updatedPayment.status === "SUCCESS"
+            ? "PAID"
+            : updatedPayment.status === "FAILED"
+              ? "FAILED"
+              : "PENDING",
+      },
+    });
+
+    return updatedPayment;
+  });
 };
